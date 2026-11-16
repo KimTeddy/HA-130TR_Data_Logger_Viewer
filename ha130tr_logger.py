@@ -22,13 +22,15 @@ CSV 출력 (한 사이클(S1~S2)당 한 행):
     python ha130tr_logger.py --list                 # 포트 목록
     python ha130tr_logger.py --raw                  # 원본 수신 줄도 화면에 출력
 종료: 그래프 창 닫기 또는 Ctrl+C
+
+통신이 끊기면(USB 분리 등) 1초마다 재연결을 시도하고, 연결되면 같은 CSV에 이어서 기록한다.
 """
 import argparse
+import bisect
 import csv
 import math
 import re
 import signal
-import statistics
 import sys
 import threading
 import time
@@ -50,6 +52,9 @@ UNITS = ["kgf", "N", "lb", "kgcm2", "bar", "MPa"]
 
 WINDOW_MIN, WINDOW_MAX = 5, 600          # 그래프 시간축 폭 슬라이더 범위(초)
 PLOT_BUFFER = WINDOW_MAX * 20            # 최대 폭을 채울 만큼 보관 (15 Hz 기준 여유)
+NO_DATA_SEC = 2.0                        # 이 시간 동안 수신이 없으면 경고 (정상 주기 ~66 ms)
+RECONNECT_SEC = 1.0                      # 통신 끊김 시 재연결 시도 간격
+BAD_LINE_PRINT = 10                      # 형식 불일치 줄 경고는 처음 N개 + 이후 100개마다
 
 
 class Logger:
@@ -58,19 +63,27 @@ class Logger:
         self.channels = {"1": (f"Torque_{unit}", f"Torque[{unit}]"),
                          "2": ("RPM", "RPM")}
         self.last_ch = "2"
-        self.synced = False
         self.show_raw = show_raw
-        self.record = {}            # ch -> value
+        self.record = {}            # ch -> value (진행 중인 사이클)
         self.rec_time = None        # 사이클 첫 줄 수신 시각
+        self.rec_perf = None
         self.last_time = None       # 직전 사이클 시작 시각
-        self.intervals = []         # 전체 주기(ms)
-        self.recent = deque(maxlen=50)
+        self.synced = False         # 사이클 시작(S1)을 한 번이라도 받았는지
         self.count = 0
         self.bad_lines = 0
+        self.gaps = 0               # 수신 끊김 구간 수
+
+        # 주기 통계 (전체는 누적값만 보관해 메모리 일정)
+        self.recent = deque(maxlen=50)
+        self.iv_n, self.iv_sum, self.iv_min, self.iv_max = 0, 0.0, math.inf, 0.0
+
+        # 연결/수신 상태 (그래프 상태줄에서 읽음)
+        self.t_start = time.perf_counter()
+        self.last_rx = self.t_start
+        self.connected = True
 
         # 그래프용 데이터 (리더 스레드가 쓰고 그래프가 읽음)
         self.lock = threading.Lock()
-        self.t_start = time.perf_counter()
         self.plot_t = deque(maxlen=PLOT_BUFFER)
         self.plot_v = {ch: deque(maxlen=PLOT_BUFFER) for ch in self.channels}
 
@@ -80,6 +93,11 @@ class Logger:
         self.w = csv.writer(self.f)
         self.w.writerow(["Timestamp", "Interval_ms"] + [c[0] for c in self.channels.values()])
         self.f.flush()
+
+    def resync(self):
+        """통신 재연결 후: 받다 만 사이클은 버리고 다음 S1부터 다시 시작"""
+        self.record = {}
+        self.synced = False
 
     def process_line(self, line: str):
         line = line.strip()
@@ -91,12 +109,14 @@ class Logger:
         m = LINE_RE.match(line)
         if not m or m.group(1) not in self.channels:
             self.bad_lines += 1
-            print(f"  [무시] 형식 불일치: {line!r}")
+            if self.bad_lines <= BAD_LINE_PRINT or self.bad_lines % 100 == 0:
+                print(f"  [무시] 형식 불일치 #{self.bad_lines}: {line!r}")
             return
+        self.last_rx = time.perf_counter()
         ch = m.group(1)
         value = float(m.group(2).replace(" ", ""))
 
-        # 시작 시 사이클 중간(S2)부터 받으면 첫 S1이 올 때까지 대기
+        # 사이클 중간(S2)부터 받으면 첫 S1이 올 때까지 대기
         if not self.synced:
             if ch != "1":
                 return
@@ -120,9 +140,15 @@ class Logger:
         interval = ""
         if self.last_time is not None:
             iv = (t - self.last_time).total_seconds() * 1000
-            self.intervals.append(iv)
-            self.recent.append(iv)
-            interval = f"{iv:.0f}"
+            interval = f"{iv:.0f}"          # CSV에는 끊김 공백도 그대로 남김
+            if iv <= NO_DATA_SEC * 1000:    # 통계는 장비 주기만 (끊김 공백 제외)
+                self.recent.append(iv)
+                self.iv_n += 1
+                self.iv_sum += iv
+                self.iv_min = min(self.iv_min, iv)
+                self.iv_max = max(self.iv_max, iv)
+            else:
+                self.gaps += 1
         self.last_time = t
 
         row = [t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3], interval]
@@ -145,9 +171,9 @@ class Logger:
 
         stat = ""
         if self.recent:
-            stat = (f"주기 {self.recent[-1]:4.0f} ms (최근{len(self.recent)}개 평균 "
-                    f"{statistics.mean(self.recent):.0f} / 최소 {min(self.recent):.0f} / "
-                    f"최대 {max(self.recent):.0f})")
+            r = self.recent
+            stat = (f"주기 {r[-1]:4.0f} ms (최근{len(r)}개 평균 {sum(r) / len(r):.0f}"
+                    f" / 최소 {min(r):.0f} / 최대 {max(r):.0f})")
         print(f"[{t.strftime('%H:%M:%S.%f')[:-3]}] #{self.count:<6} {'  '.join(disp)}   {stat}")
 
         self.record = {}
@@ -162,48 +188,85 @@ class Logger:
         self.record = {}        # 종료 시점에 받다 만 사이클(S1만 수신 등)은 버림
         self.f.close()
         print(f"\n종료: {self.count} 행 저장 -> {self.csv_path}")
-        if self.intervals:
-            print(f"측정 주기: 평균 {statistics.mean(self.intervals):.1f} ms, "
-                  f"최소 {min(self.intervals):.0f} ms, 최대 {max(self.intervals):.0f} ms "
-                  f"({len(self.intervals)}개 샘플)")
+        if self.iv_n:
+            print(f"측정 주기: 평균 {self.iv_sum / self.iv_n:.1f} ms, "
+                  f"최소 {self.iv_min:.0f} ms, 최대 {self.iv_max:.0f} ms ({self.iv_n}개 샘플)")
+        if self.gaps:
+            print(f"수신 끊김 구간: {self.gaps}회 (CSV의 Interval_ms > {NO_DATA_SEC * 1000:.0f} 인 행)")
         if self.bad_lines:
             print(f"형식 불일치로 무시한 줄: {self.bad_lines}")
 
 
-def read_loop(ser, log, stop):
-    """시리얼 수신 -> 줄 분리 -> Logger. stop 이벤트가 설정되면 종료."""
-    buf = b""
-    first_line = True       # 시작 시 중간부터 받은 첫 조각은 버림
+def read_loop(open_port, ser, log, stop):
+    """시리얼 수신 -> 줄 분리 -> Logger. 끊기면 재연결. stop 이벤트가 설정되면 종료."""
+    warned_no_data = False
     try:
         while not stop.is_set():
-            chunk = ser.read(ser.in_waiting or 1)
-            if not chunk:
-                continue
-            buf += chunk
-            # CR, LF, CRLF 모두 줄 구분자로 처리
-            parts = re.split(rb"\r\n|\r|\n", buf)
-            buf = parts.pop()
-            if parts and first_line:
-                parts.pop(0)
-                first_line = False
-            for p in parts:
-                log.process_line(p.decode("ascii", errors="replace"))
-            if len(buf) > 1024:   # 비정상 데이터 보호
-                buf = b""
-    except serial.SerialException as e:
-        print(f"\n[오류] 시리얼 통신 끊김: {e}")
+            # ---- (재)연결 ----
+            if ser is None:
+                try:
+                    ser = open_port()
+                except (serial.SerialException, OSError):
+                    stop.wait(RECONNECT_SEC)
+                    continue
+                log.connected = True
+                log.last_rx = time.perf_counter()
+                print("\n[연결] 시리얼 포트 재연결됨 - 같은 파일에 이어서 기록합니다.\n")
+
+            buf = b""
+            first_line = True       # (재)연결 직후 중간부터 받은 첫 조각은 버림
+            log.resync()
+            try:
+                while not stop.is_set():
+                    chunk = ser.read(ser.in_waiting or 1)
+                    now = time.perf_counter()
+                    if chunk:
+                        buf += chunk
+                        # CR, LF, CRLF 모두 줄 구분자로 처리
+                        parts = re.split(rb"\r\n|\r|\n", buf)
+                        buf = parts.pop()
+                        if parts and first_line:
+                            parts.pop(0)
+                            first_line = False
+                        for p in parts:
+                            log.process_line(p.decode("ascii", errors="replace"))
+                        if len(buf) > 1024:   # 비정상 데이터 보호
+                            buf = b""
+
+                    # 수신 없음 감시
+                    silent = now - log.last_rx
+                    if silent > NO_DATA_SEC and not warned_no_data:
+                        warned_no_data = True
+                        print(f"\n[경고] {NO_DATA_SEC:.0f}초 이상 데이터 수신 없음 "
+                              "(장비 전원 / 케이블 / 통신속도 / F-09 ID=00 확인)\n")
+                    elif silent <= NO_DATA_SEC and warned_no_data:
+                        warned_no_data = False
+                        print("\n[정상] 데이터 수신 재개\n")
+            except (serial.SerialException, OSError) as e:
+                print(f"\n[오류] 시리얼 통신 끊김: {e}\n       {RECONNECT_SEC:.0f}초마다 재연결 시도 중... "
+                      "(종료하려면 창 닫기 / Ctrl+C)\n")
+                log.connected = False
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
     finally:
+        if ser is not None:
+            ser.close()
         stop.set()
 
 
-def run_plot(log, unit, window, stop):
-    """실시간 그래프. 창을 닫거나 stop 이벤트가 설정되면 반환."""
+def run_plot(log, unit, window, stop, on_ready):
+    """실시간 그래프. 창을 닫거나 stop 이벤트가 설정되면 반환.
+    on_ready: 그래프 준비(무거운 초기화) 후 호출 -> 이때 수신 시작 (초기 타임스탬프 지연 방지)"""
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
     from matplotlib.widgets import Slider
 
-    # 팔레트: 차트 면 / 잉크 / 시리즈 색 (Torque=blue, RPM=orange)
+    # 팔레트: 차트 면 / 잉크 / 시리즈 색 (Torque=blue, RPM=orange) / 경고(critical)
     SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
+    CRITICAL = "#d03b3b"
     COLORS = {"1": "#2a78d6", "2": "#eb6834"}
     TITLES = {"1": f"Torque [{unit}]", "2": "RPM"}
 
@@ -258,9 +321,7 @@ def run_plot(log, unit, window, stop):
         axes[1].set_xlim(x0, x1)
 
         # 보이는 구간만 그림
-        lo = 0
-        while lo < len(ts) and ts[lo] < x0:
-            lo += 1
+        lo = bisect.bisect_left(ts, x0)
         vis_t = ts[lo:]
         for ax, ch in zip(axes, ("1", "2")):
             vis_v = vals[ch][lo:]
@@ -272,13 +333,25 @@ def run_plot(log, unit, window, stop):
                 ax.set_ylim(vmin - pad, vmax + pad)
                 titles[ch].set_text(f"{TITLES[ch]}    현재 {finite[-1]:.1f}")
 
-        iv = f"{log.recent[-1]:.0f} ms" if log.recent else "-"
-        status.set_text(f"기록 중: {log.csv_path.name}   |   {log.count} 행   |   주기 {iv}"
-                        f"   |   창을 닫으면 로깅 종료")
+        silent = time.perf_counter() - log.last_rx
+        if not log.connected:
+            status.set_text(f"[연결 끊김] 재연결 시도 중...   |   {log.csv_path.name}   |   {log.count} 행")
+            status.set_color(CRITICAL)
+        elif silent > NO_DATA_SEC:
+            status.set_text(f"[경고] {silent:.0f}초간 수신 없음 - 장비 전원 / 케이블 / 통신 설정 확인"
+                            f"   |   {log.count} 행")
+            status.set_color(CRITICAL)
+        else:
+            iv = f"{log.recent[-1]:.0f} ms" if log.recent else "-"
+            status.set_text(f"기록 중: {log.csv_path.name}   |   {log.count} 행   |   주기 {iv}"
+                            f"   |   창을 닫으면 로깅 종료")
+            status.set_color(INK2)
 
-    # 그래프 스레드에서 Ctrl+C -> 종료 이벤트
+    # 그래프 표시 중 Ctrl+C -> 종료 이벤트 (다음 갱신 때 창이 닫힘)
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     anim = FuncAnimation(fig, update, interval=100, cache_frame_data=False)  # noqa: F841
+    fig.canvas.draw()       # 첫 렌더링(폰트 로딩 등)을 수신 시작 전에 끝냄
+    on_ready()
     plt.show()
     stop.set()
 
@@ -306,14 +379,16 @@ def main():
             print(f"{p.device}\t{p.description}")
         return
 
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    csv_path = outdir / f"HA130TR_{datetime.now():%Y%m%d_%H%M%S}.csv"
+    def open_port():
+        s = serial.Serial(args.port, args.baud, bytesize=args.databits,
+                          parity=PARITY[args.parity], stopbits=STOPBITS[args.stopbits],
+                          timeout=0.1)
+        s.reset_input_buffer()
+        return s
 
+    # 시작 시 포트를 못 열면 바로 종료 (설정 오류일 가능성이 높음)
     try:
-        ser = serial.Serial(args.port, args.baud, bytesize=args.databits,
-                            parity=PARITY[args.parity], stopbits=STOPBITS[args.stopbits],
-                            timeout=0.1)
+        ser = open_port()
     except serial.SerialException as e:
         print(f"[오류] {args.port} 를 열 수 없습니다: {e}")
         print("  - Tera Term 등 다른 프로그램이 포트를 사용 중이면 먼저 닫아 주세요.")
@@ -321,7 +396,9 @@ def main():
         print(f"  - 사용 가능한 포트: {ports or '(없음)'}")
         sys.exit(1)
 
-    ser.reset_input_buffer()
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    csv_path = outdir / f"HA130TR_{datetime.now():%Y%m%d_%H%M%S}.csv"
     log = Logger(args.unit, csv_path, args.raw)
     print(f"포트 : {args.port} ({args.baud}, {args.databits}{args.parity}{args.stopbits})")
     print(f"단위 : Torque = {args.unit} (장비 F-13 설정과 일치해야 함), RPM")
@@ -331,17 +408,23 @@ def main():
     stop = threading.Event()
     try:
         if args.no_plot:
-            read_loop(ser, log, stop)
+            read_loop(open_port, ser, log, stop)
         else:
-            reader = threading.Thread(target=read_loop, args=(ser, log, stop), daemon=True)
-            reader.start()
-            run_plot(log, args.unit, args.window, stop)
+            reader = threading.Thread(target=read_loop, args=(open_port, ser, log, stop),
+                                      daemon=True)
+
+            def start_reader():
+                ser.reset_input_buffer()            # 그래프 준비 중 쌓인 데이터 버림
+                log.t_start = log.last_rx = time.perf_counter()
+                reader.start()
+
+            run_plot(log, args.unit, args.window, stop, start_reader)
+            stop.set()
             reader.join(timeout=2)
     except KeyboardInterrupt:
         pass
     finally:
         stop.set()
-        ser.close()
         log.close()
 
 
