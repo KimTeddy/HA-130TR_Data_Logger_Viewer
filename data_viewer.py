@@ -305,7 +305,12 @@ class Viewer:
         b = ttk.Frame(right)
         b.pack(fill=tk.X, pady=(8, 0))
         ttk.Button(b, text="선택 구간 확대 (X·Y 맞춤)", command=self.zoom_selection).pack(fill=tk.X)
-        ttk.Button(b, text="전체 보기 / 선택 해제", command=self.reset_view).pack(fill=tk.X, pady=(3, 0))
+        row = ttk.Frame(b)
+        row.pack(fill=tk.X, pady=(3, 0))
+        ttk.Button(row, text="전체 보기", command=self.reset_view).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(row, text="선택 해제", command=self.clear_selection).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
         ttk.Button(b, text="분석 결과 복사 (Excel 붙여넣기)", command=self.copy_result).pack(fill=tk.X, pady=3)
         ttk.Button(b, text="선택 구간 CSV로 저장...", command=self.export_sel).pack(fill=tk.X)
         ttk.Label(right, foreground=INK2, wraplength=em * 22, justify=tk.LEFT,
@@ -506,14 +511,24 @@ class Viewer:
                            f"선택 구간 확대: {x0:,.3f} ~ {x1:,.3f} s  ({hi - lo:,} 샘플)")
 
     def reset_view(self):
+        """전체 보기: x·y축을 파일을 열었을 때 범위로 (선택 구간/분석은 유지)"""
+        if not self.d:
+            return
+        if self.toolbar._nav_stack() is None:
+            self.toolbar.push_current()
+        for ax, name in zip(self.axes, self.d.series):
+            ax.set_ylim(*self.full_ylim[name])
+        self.axes[0].set_xlim(0, self.d.t[-1] if self.d.t[-1] > 0 else 1.0)
+        self.toolbar.push_current()         # 툴바 ← 로 직전 확대 보기로 돌아갈 수 있게
+        self.canvas.draw_idle()
+
+    def clear_selection(self):
+        """선택 해제: 파란 영역을 지우고 분석을 전체 파일로 (보기 범위는 유지)"""
         if not self.d:
             return
         for p in self.sel_patches:
             p.remove()
         self.sel_patches = []
-        for ax, name in zip(self.axes, self.d.series):
-            ax.set_ylim(*self.full_ylim[name])
-        self.axes[0].set_xlim(0, self.d.t[-1] if self.d.t[-1] > 0 else 1.0)
         self.update_analysis(0, self.d.n)
         self.canvas.draw_idle()
 
