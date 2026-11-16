@@ -193,6 +193,16 @@ def decimate(t, y, x0, x1, buckets=DISPLAY_BUCKETS):
     return xs, yv
 
 
+def fit_ylim(y, min_pad=0.1, frac=0.08):
+    """값 배열에 맞춘 (ymin, ymax) + 여백. 유효값이 없으면 None"""
+    fin = y[np.isfinite(y)]
+    if not fin.size:
+        return None
+    lo, hi = float(fin.min()), float(fin.max())
+    pad = max((hi - lo) * frac, min_pad)
+    return lo - pad, hi + pad
+
+
 def fmt_num(v):
     if isinstance(v, (int, np.integer)):
         return f"{v:,}"
@@ -294,11 +304,13 @@ class Viewer:
 
         b = ttk.Frame(right)
         b.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(b, text="전체 보기 / 선택 해제", command=self.reset_view).pack(fill=tk.X)
+        ttk.Button(b, text="선택 구간 확대 (X·Y 맞춤)", command=self.zoom_selection).pack(fill=tk.X)
+        ttk.Button(b, text="전체 보기 / 선택 해제", command=self.reset_view).pack(fill=tk.X, pady=(3, 0))
         ttk.Button(b, text="분석 결과 복사 (Excel 붙여넣기)", command=self.copy_result).pack(fill=tk.X, pady=3)
         ttk.Button(b, text="선택 구간 CSV로 저장...", command=self.export_sel).pack(fill=tk.X)
         ttk.Label(right, foreground=INK2, wraplength=em * 22, justify=tk.LEFT,
                   text="• 그래프를 좌우로 드래그 → 구간 선택\n"
+                       "• 선택 구간 확대 후 툴바 ← 버튼으로 이전 보기 복귀\n"
                        "• 툴바: 돋보기 = 확대, 십자 = 이동, 집 = 처음 보기\n"
                        "• 확대/이동이 켜져 있으면 구간 선택 불가 (버튼 다시 눌러 해제)"
                   ).pack(anchor="w", pady=(8, 0))
@@ -379,6 +391,7 @@ class Viewer:
         axes = self.fig.subplots(len(names), 1, sharex=True, squeeze=False)[:, 0]
         self.axes = axes
         self.lines = {}
+        self.full_ylim = {}                 # 전체 보기 y범위 (전체 보기 버튼으로 복원)
         self.spans = []
         for k, (ax, name) in enumerate(zip(axes, names)):
             ax.set_facecolor(SURFACE)
@@ -393,12 +406,10 @@ class Viewer:
                          fontfamily=["Malgun Gothic", "DejaVu Sans"])
             (self.lines[name],) = ax.plot([], [], color=SERIES_COLORS[k % len(SERIES_COLORS)],
                                           linewidth=1.3)
-            y = d.series[name]
-            fin = y[np.isfinite(y)]
-            if fin.size:
-                lo, hi = float(fin.min()), float(fin.max())
-                pad = max((hi - lo) * 0.08, 0.5)
-                ax.set_ylim(lo - pad, hi + pad)
+            ylim = fit_ylim(d.series[name], min_pad=0.5)
+            if ylim:
+                ax.set_ylim(*ylim)
+            self.full_ylim[name] = ax.get_ylim()
             self.spans.append(SpanSelector(
                 ax, self.on_span, "horizontal", useblit=True, minspan=1e-6,
                 props=dict(facecolor=SELECT_COLOR, alpha=0.12)))
@@ -473,12 +484,35 @@ class Viewer:
             self.stats.insert("", tk.END, values=row)
         self._last_result = (general, stats)
 
+    def zoom_selection(self):
+        """선택 구간에 x축을 맞추고, 각 축 y범위를 그 구간 데이터에 맞춤"""
+        if not self.d or not self.sel:
+            return
+        lo, hi = self.sel
+        x0, x1 = float(self.d.t[lo]), float(self.d.t[hi - 1])
+        if x1 <= x0:
+            x1 = x0 + 1e-3
+        tb = self.toolbar
+        if tb._nav_stack() is None:         # 툴바 ← 버튼으로 돌아올 수 있게 현재 보기 저장
+            tb.push_current()
+        for ax, name in zip(self.axes, self.d.series):
+            ylim = fit_ylim(self.d.series[name][lo:hi])
+            if ylim:
+                ax.set_ylim(*ylim)
+        self.axes[0].set_xlim(x0, x1)       # xlim_changed -> 해당 구간 해상도로 다시 그림
+        tb.push_current()
+        whole = (lo == 0 and hi == self.d.n)
+        self.status.config(text="전체 데이터에 맞춰 확대했습니다." if whole else
+                           f"선택 구간 확대: {x0:,.3f} ~ {x1:,.3f} s  ({hi - lo:,} 샘플)")
+
     def reset_view(self):
         if not self.d:
             return
         for p in self.sel_patches:
             p.remove()
         self.sel_patches = []
+        for ax, name in zip(self.axes, self.d.series):
+            ax.set_ylim(*self.full_ylim[name])
         self.axes[0].set_xlim(0, self.d.t[-1] if self.d.t[-1] > 0 else 1.0)
         self.update_analysis(0, self.d.n)
         self.canvas.draw_idle()
