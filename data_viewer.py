@@ -311,6 +311,9 @@ class Viewer:
             side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(row, text="선택 해제", command=self.clear_selection).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+        self.restore_btn = ttk.Button(row, text="이전 선택", command=self.restore_selection,
+                                      state=tk.DISABLED)
+        self.restore_btn.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
         ttk.Button(b, text="분석 결과 복사 (Excel 붙여넣기)", command=self.copy_result).pack(fill=tk.X, pady=3)
         ttk.Button(b, text="선택 구간 CSV로 저장...", command=self.export_sel).pack(fill=tk.X)
         ttk.Label(right, foreground=INK2, wraplength=em * 22, justify=tk.LEFT,
@@ -391,6 +394,8 @@ class Viewer:
         self.d = d
         self.sel = None
         self.sel_patches = []
+        self.prev_sel = None                # 선택 해제 직전 구간 (이전 선택 버튼용)
+        self._update_restore_btn()
         self.fig.clear()
         names = list(d.series)
         axes = self.fig.subplots(len(names), 1, sharex=True, squeeze=False)[:, 0]
@@ -454,12 +459,30 @@ class Viewer:
         if hi - lo < 2:
             self.status.config(text="선택 구간에 데이터가 2개 미만입니다. 더 넓게 드래그하세요.")
             return
+        self._select(lo, hi)
+
+    def _select(self, lo, hi):
+        """[lo, hi) 구간을 선택 상태로: 모든 축에 파란 영역 + 분석"""
         for p in self.sel_patches:
             p.remove()
         self.sel_patches = [ax.axvspan(self.d.t[lo], self.d.t[hi - 1], color=SELECT_COLOR,
                                        alpha=0.12, linewidth=0) for ax in self.axes]
         self.canvas.draw_idle()
         self.update_analysis(lo, hi)
+        self._update_restore_btn()
+
+    def _update_restore_btn(self):
+        """이전 선택 버튼: 해제된 선택이 있고 현재 선택이 없을 때만 활성"""
+        ok = self.prev_sel is not None and not self.sel_patches
+        self.restore_btn.config(state=tk.NORMAL if ok else tk.DISABLED)
+
+    def restore_selection(self):
+        if not self.d or self.prev_sel is None:
+            return
+        lo, hi = self.prev_sel
+        self._select(lo, hi)
+        self.status.config(text=f"이전 선택 복원: {self.d.t[lo]:,.3f} ~ {self.d.t[hi - 1]:,.3f} s"
+                                f"  ({hi - lo:,} 샘플)")
 
     def update_analysis(self, lo, hi):
         self.sel = (lo, hi)
@@ -526,10 +549,13 @@ class Viewer:
         """선택 해제: 파란 영역을 지우고 분석을 전체 파일로 (보기 범위는 유지)"""
         if not self.d:
             return
+        if self.sel_patches:                # 해제하는 선택을 기억 -> '이전 선택'으로 복원
+            self.prev_sel = self.sel
         for p in self.sel_patches:
             p.remove()
         self.sel_patches = []
         self.update_analysis(0, self.d.n)
+        self._update_restore_btn()
         self.canvas.draw_idle()
 
     def copy_result(self):
