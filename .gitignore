@@ -4,5 +4,6 @@ __pycache__/
 *.pyc
 
 # 로깅 결과 (측정 데이터)
-data/
+data/*
 *.csv
+!data/HA130TR_20261116_181509.csv
