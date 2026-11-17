@@ -1,6 +1,6 @@
 # ha130tr_logger.py — HA-130TR 시리얼 CSV 로거 (기록 시작/종료 버튼 + 실시간 그래프)
 
-> 이 문서는 이 프로젝트를 처음 보는 AI 에이전트/개발자를 위한 설명이다.
+> 이 문서는 이 프로젝트를 처음 보는 개발자를 위한 설명이다.
 > 코드만 봐서는 알 수 없는 **배경, 실측 사실, 설계 이유, 함정**을 중심으로 적었다.
 > 짝 문서: [check_rate.md](check_rate.md) (수신 주기 측정), [data_viewer.md](data_viewer.md) (기록 데이터 뷰어)
 
@@ -16,7 +16,7 @@ USB-시리얼 변환기(PC에서 **COM4**)로 받아서
 
 ## 2. 장비와 통신 프로토콜 (매뉴얼 근거)
 
-출처: `HA-130TR,130DW,230AT-통합메뉴얼.pdf` 10장 "Option-02 (RS232C)". 사용자가 대화 중 제공했고 저장소에는 없다.
+출처: `HA-130TR,130DW,230AT-통합메뉴얼.pdf` 10장 "Option-02 (RS232C)".
 
 | 항목 | 값 |
 |---|---|
@@ -134,7 +134,7 @@ main()
 
 ### 안정성 기능
 - **자동 재연결**: `SerialException/OSError` → 1초마다 `open_port()` 재시도. 기록 중이었다면 **같은 CSV에 이어서** 기록.
-  끊긴 시간은 다음 행의 `Interval_ms`에 그대로 남는다. 실제 USB 분리로 동작 확인됨(사용자 로그에 7~16 s 끊김 후 정상 이어짐).
+  끊긴 시간은 다음 행의 `Interval_ms`에 그대로 남는다. 실제 USB 분리로 동작 확인됨(7~16 s 끊김 후 정상 이어짐).
 - **시작 시** 포트를 못 열면 재시도하지 않고 즉시 종료(설정 오류일 가능성이 높으므로).
 - **수신 없음 경고**: 2초(`NO_DATA_SEC`) 이상 유효한 줄이 없으면 콘솔 + 창 상태줄(빨강)에 경고, 재개 시 알림.
 - **주기 통계**는 누적 합/최소/최대만 유지(메모리 일정). 2초 초과 간격은 통계에서 제외하고 `gaps`로 따로 센다.
@@ -153,16 +153,16 @@ main()
 - Windows 11, **Anaconda base (Python 3.11)**. VS Code는 `.vscode/settings.json`에서 Conda를 기본 환경 관리자로 지정.
   위 실행 예의 `python`은 base가 활성화된 터미널 기준이다.
 - 의존성: `requirements.txt` (pyserial, matplotlib>=3.7; numpy·tkinter는 Anaconda에 포함).
-  base에는 pyserial이 없어서 `python -m pip install --user pyserial`로 사용자 site-packages에 설치했다
-  (base가 `C:\ProgramData`에 있어 관리자 권한 없이는 base에 직접 설치 불가).
+  base에 pyserial이 없으면 `python -m pip install --user pyserial`로 설치한다
+  (base가 `C:\ProgramData`에 있으면 관리자 권한 없이는 base에 직접 설치할 수 없다).
 - `run_logger.bat` / `run_viewer.bat`은 Python을 **Anaconda base(`%ProgramData%\anaconda3` → `%USERPROFILE%\anaconda3`) → `.venv`** 순으로 찾는다.
   `.venv`는 예전 python.org + venv 환경용으로 남긴 대체 경로다. venv의 `python.exe`는 **런처**라서 실제 Python이 자식 프로세스로 뜬다
   → 테스트 시 PID로 창을 찾으면 안 된다.
 - 콘솔 출력이 한글이므로 stdout을 리다이렉트할 때는 `PYTHONIOENCODING=utf-8`.
-- `.bat` 파일은 **ASCII + CRLF**여야 한다. UTF-8 한글/LF로 저장하면 cmd가 줄을 깨뜨려 실행 실패(실제로 겪음).
+- `.bat` 파일은 **ASCII + CRLF**여야 한다. UTF-8 한글/LF로 저장하면 cmd가 줄을 깨뜨려 실행에 실패한다.
   `.gitattributes`에 `*.bat text eol=crlf`.
 
-## 7. 테스트 방법 (이전에 사용한 것)
+## 7. 테스트 방법
 
 - **단위 테스트(장비 불필요)**: `csv_name`/`clean_suffix`(빈칸, 공백만, 한글, 금지문자, 끝 마침표, 괄호),
   `unique_path` 중복 시 `(2)`, `(3)`, `Recorder`: 대기 중 write 무시 / 시작 전 사이클 무시 / 끊김 통계 / 두 번째 기록의 첫 Interval 빈칸 /
@@ -170,8 +170,8 @@ main()
 - **창 테스트(실제 COM4)**: 테스트 스크립트 안에서 `Recorder`, `Receiver`, `LoggerApp`을 직접 만들고
   `suffix_entry.insert`, `start_btn.invoke()`, `stop_btn.invoke()`, `on_close()`(X 버튼과 동일)를 순서대로 호출.
   확인창은 `app.messagebox.askyesno`를 가짜로 바꿔 '예'. `root.update()` 루프로 진행하고 `PIL.ImageGrab`으로 창 캡처.
-  - 캡처 전에 반드시 `root.attributes("-topmost", True)` — 안 하면 앞에 있는 다른 창(사용자 브라우저 등)이 찍힌다(실제로 겪음).
-  - 예전 방식(`EnumWindows`로 제목 `HA-130TR*` 창을 찾아 `WM_CLOSE`)은 **사용자가 띄워 둔 data_viewer 창까지 닫을 수 있으므로**
+  - 캡처 전에 반드시 `root.attributes("-topmost", True)` — 안 하면 앞에 있는 다른 창(브라우저 등)이 찍힌다.
+  - 예전 방식(`EnumWindows`로 제목 `HA-130TR*` 창을 찾아 `WM_CLOSE`)은 **이미 열려 있는 data_viewer 창까지 닫을 수 있으므로**
     쓰지 말 것(뷰어 제목도 `HA-130TR 데이터 뷰어`).
 - **콘솔 모드**: Git Bash의 `timeout -s INT`는 Windows 프로그램에 Ctrl+C를 전달하지 못한다 → 프로세스가 COM4를 계속 잡는다.
   끝낼 때는 명령줄로 해당 프로세스만 찾아 종료(행마다 flush라 데이터는 남음).
@@ -185,4 +185,4 @@ main()
   채널을 늘리면 `last_ch`(사이클 마지막 채널)도 맞출 것.
 - CSV 형식을 바꾸면 **data_viewer.py의 `LogData`/`series_label`도 같이** 맞춰야 한다. 파일명 접미사는 뷰어와 무관(`*.csv` 전부 읽음).
 - 간격 2000 ms 기준(`NO_DATA_SEC`)은 data_viewer.py의 `GAP_MS`와 같은 값이어야 한다.
-- 후보 기능(요청은 없었음): Command mode 폴링, 일정 시간/행마다 파일 분할(Excel 행 제한 대응), 기록 중 메모 삽입.
+- 후보 기능(미구현): Command mode 폴링, 일정 시간/행마다 파일 분할(Excel 행 제한 대응), 기록 중 메모 삽입.
