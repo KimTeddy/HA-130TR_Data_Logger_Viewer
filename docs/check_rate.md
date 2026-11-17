@@ -12,8 +12,8 @@
 ## 2. 실행
 
 ```
-.venv\Scripts\python.exe check_rate.py --port COM4 --baud 9600 --duration 10
-.venv\Scripts\python.exe check_rate.py --raw        # 각 줄의 상대 수신 시각도 출력
+python check_rate.py --port COM4 --baud 9600 --duration 10
+python check_rate.py --raw        # 각 줄의 상대 수신 시각도 출력
 ```
 
 옵션: `--port`, `--baud`, `--parity N|E|O`, `--databits 7|8`, `--stopbits 1|2`, `--duration`(초), `--raw`.

@@ -40,9 +40,9 @@ USB-시리얼 변환기(PC에서 **COM4**)로 받아서
 ## 3. 실행과 화면
 
 ```
-run_logger.bat                                                   # 더블클릭
-.venv\Scripts\python.exe ha130tr_logger.py --port COM4           # 위와 동일
-.venv\Scripts\python.exe ha130tr_logger.py --no-plot --suffix A  # 창 없이 바로 기록, Ctrl+C로 종료
+run_logger.bat                                     # 더블클릭
+python ha130tr_logger.py --port COM4               # 위와 동일
+python ha130tr_logger.py --no-plot --suffix A      # 창 없이 바로 기록, Ctrl+C로 종료
 ```
 
 | 옵션 | 설명 |
@@ -150,12 +150,16 @@ main()
 
 ## 6. 환경
 
-- Windows 11, **python.org Python 3.14** (사용자 PATH), 프로젝트 `.venv`.
-  초기엔 uv로 설치했다가 사용자 요청("일반적인 방법")으로 제거하고 python.org + venv로 바꿨다.
-- 의존성: `requirements.txt` (pyserial, matplotlib).
-- `.venv\Scripts\python.exe`는 **런처**라서 실제 Python은 자식 프로세스로 뜬다 → 테스트 시 PID로 창을 찾으면 안 된다.
+- Windows 11, **Anaconda base (Python 3.11)**. VS Code는 `.vscode/settings.json`에서 Conda를 기본 환경 관리자로 지정.
+  위 실행 예의 `python`은 base가 활성화된 터미널 기준이다.
+- 의존성: `requirements.txt` (pyserial, matplotlib>=3.7; numpy·tkinter는 Anaconda에 포함).
+  base에는 pyserial이 없어서 `python -m pip install --user pyserial`로 사용자 site-packages에 설치했다
+  (base가 `C:\ProgramData`에 있어 관리자 권한 없이는 base에 직접 설치 불가).
+- `run_logger.bat` / `run_viewer.bat`은 Python을 **Anaconda base(`%ProgramData%\anaconda3` → `%USERPROFILE%\anaconda3`) → `.venv`** 순으로 찾는다.
+  `.venv`는 예전 python.org + venv 환경용으로 남긴 대체 경로다. venv의 `python.exe`는 **런처**라서 실제 Python이 자식 프로세스로 뜬다
+  → 테스트 시 PID로 창을 찾으면 안 된다.
 - 콘솔 출력이 한글이므로 stdout을 리다이렉트할 때는 `PYTHONIOENCODING=utf-8`.
-- `run_logger.bat`은 **ASCII + CRLF**여야 한다. UTF-8 한글/LF로 저장하면 cmd가 줄을 깨뜨려 실행 실패(실제로 겪음).
+- `.bat` 파일은 **ASCII + CRLF**여야 한다. UTF-8 한글/LF로 저장하면 cmd가 줄을 깨뜨려 실행 실패(실제로 겪음).
   `.gitattributes`에 `*.bat text eol=crlf`.
 
 ## 7. 테스트 방법 (이전에 사용한 것)

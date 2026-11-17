@@ -16,9 +16,9 @@ ha130tr_logger.py가 만든 CSV를 열어 그래프로 보고, **마우스로 �
 ## 2. 실행
 
 ```
-run_viewer.bat                                   # 더블클릭 (pythonw, 콘솔 창 없음)
-.venv\Scripts\python.exe data_viewer.py          # 기본 ./data
-.venv\Scripts\python.exe data_viewer.py D:\logs  # 다른 폴더
+run_viewer.bat                 # 더블클릭 (pythonw, 콘솔 창 없음)
+python data_viewer.py          # 기본 ./data
+python data_viewer.py D:\logs  # 다른 폴더
 ```
 
 ## 3. 화면
